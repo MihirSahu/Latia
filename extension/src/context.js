@@ -1,9 +1,34 @@
-export async function capturePageContext(maxChars = 80000) {
+import { ensureHostPermissions, getOriginPattern } from "./permissions.js";
+
+export async function getActivePageTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
   if (!tab?.id) {
     throw new Error("No active tab is available.");
   }
+
+  return tab;
+}
+
+export function getPageOriginPattern(tab) {
+  return getOriginPattern(tab?.url);
+}
+
+export async function ensurePageHostPermission(tab) {
+  const originPattern = getPageOriginPattern(tab);
+
+  if (!originPattern) {
+    return true;
+  }
+
+  return ensureHostPermissions(
+    [originPattern],
+    "Latia needs access to this page before it can read the selected text or page content."
+  );
+}
+
+export async function capturePageContext(maxChars = 80000, tabId = null) {
+  const tab = tabId ? { id: tabId } : await getActivePageTab();
 
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },

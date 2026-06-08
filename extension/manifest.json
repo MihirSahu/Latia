@@ -3,7 +3,7 @@
   "name": "Latia",
   "description": "Ask questions about the current page using your own OpenAI-compatible model endpoint.",
   "version": "0.1.0",
-  "permissions": ["activeTab", "scripting", "sidePanel", "storage"],
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage", "tabs"],
   "host_permissions": ["http://127.0.0.1:*/*", "http://localhost:*/*"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {

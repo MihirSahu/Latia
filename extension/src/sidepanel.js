@@ -1,6 +1,7 @@
-import { capturePageContext } from "./context.js";
+import { capturePageContext, getActivePageTab, getPageOriginPattern } from "./context.js";
 import { icons } from "./icons.js";
-import { ensureProviderHostPermission, sendProviderRequest, testProvider } from "./providers.js";
+import { requestHostPermissions } from "./permissions.js";
+import { getProviderOriginPattern, sendProviderRequest, testProvider } from "./providers.js";
 import { createProvider, loadSettings, saveSettings } from "./storage.js";
 
 const app = document.querySelector("#app");
@@ -233,8 +234,14 @@ function bindChat() {
       if (!ok) return;
     }
 
+    let tab;
+
     try {
-      await ensureProviderHostPermission(provider);
+      tab = await getActivePageTab();
+      await requestHostPermissions(
+        [getProviderOriginPattern(provider), getPageOriginPattern(tab)],
+        "Latia needs access to this page and provider before it can answer."
+      );
     } catch (error) {
       state.status = error.message;
       render();
@@ -249,7 +256,7 @@ function bindChat() {
     render();
 
     try {
-      const snapshot = await capturePageContext(state.settings.context.maxChars);
+      const snapshot = await capturePageContext(state.settings.context.maxChars, tab.id);
       const answer = await sendProviderRequest({ provider, snapshot, question });
       state.settings.messages.push({ role: "assistant", content: answer, snapshot });
       await persistMessages();
@@ -283,7 +290,10 @@ function bindSettings() {
     updateProviderFromForm();
 
     try {
-      await ensureProviderHostPermission(getActiveProvider());
+      await requestHostPermissions(
+        [getProviderOriginPattern(getActiveProvider())],
+        "Latia needs access to the provider origin before it can send requests."
+      );
     } catch (error) {
       state.status = error.message;
       render();

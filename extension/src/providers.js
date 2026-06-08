@@ -1,3 +1,5 @@
+import { ensureHostPermissions, getOriginPattern } from "./permissions.js";
+
 export async function sendProviderRequest({ provider, snapshot, question, stream = false }) {
   if (!provider) {
     throw new Error("No model provider configured.");
@@ -106,45 +108,20 @@ export async function testProvider(provider) {
 }
 
 export async function ensureProviderHostPermission(provider) {
-  const originPattern = getOriginPattern(provider.baseUrl);
+  const originPattern = getProviderOriginPattern(provider);
 
   if (!originPattern) {
     throw new Error("Enter a valid provider Base URL.");
   }
 
-  const hasPermission = await chrome.permissions.contains({
-    origins: [originPattern]
-  });
-
-  if (hasPermission) {
-    return true;
-  }
-
-  const granted = await chrome.permissions.request({
-    origins: [originPattern]
-  });
-
-  if (!granted) {
-    throw new Error("Latia needs access to the provider origin before it can send requests.");
-  }
-
-  return true;
+  return ensureHostPermissions(
+    [originPattern],
+    "Latia needs access to the provider origin before it can send requests."
+  );
 }
 
-function getOriginPattern(baseUrl) {
-  let url;
-
-  try {
-    url = new URL(baseUrl);
-  } catch {
-    return null;
-  }
-
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return null;
-  }
-
-  return `${url.origin}/*`;
+export function getProviderOriginPattern(provider) {
+  return getOriginPattern(provider?.baseUrl);
 }
 
 async function readJsonResponse(response) {
