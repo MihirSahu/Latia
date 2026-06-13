@@ -1,6 +1,13 @@
 import { ensureHostPermissions, getOriginPattern } from "./permissions.js";
 
-export async function sendProviderRequest({ provider, snapshot, question, stream = false }) {
+export async function sendProviderRequest({
+  provider,
+  snapshot,
+  question,
+  conversation = [],
+  stream = false,
+  onToken = null
+}) {
   if (!provider) {
     throw new Error("No model provider configured.");
   }
@@ -23,28 +30,7 @@ export async function sendProviderRequest({ provider, snapshot, question, stream
     "When helpful, refer to the specific part of the context you used."
   ].join("\n");
 
-  const userPrompt =
-    snapshot.source === "selection"
-      ? [
-          "The user selected this text from the page:",
-          "",
-          snapshot.text,
-          "",
-          "Question:",
-          question
-        ].join("\n")
-      : [
-          `Page title: ${snapshot.title}`,
-          `URL: ${snapshot.url}`,
-          `Context mode: full page`,
-          `Captured at: ${snapshot.capturedAt}`,
-          "",
-          "Page context:",
-          snapshot.text,
-          "",
-          "User question:",
-          question
-        ].join("\n");
+  const promptMessages = buildPromptMessages({ snapshot, question, conversation });
 
   if (provider.apiStyle === "responses") {
     const response = await fetch(`${baseUrl}/responses`, {
@@ -52,13 +38,14 @@ export async function sendProviderRequest({ provider, snapshot, question, stream
       headers,
       body: JSON.stringify({
         model: provider.model,
-        input: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
+        input: [{ role: "system", content: systemPrompt }, ...promptMessages],
         stream
       })
     });
+
+    if (stream) {
+      return readStreamingText(response, readResponsesStreamDelta, readResponsesText, onToken);
+    }
 
     const json = await readJsonResponse(response);
     return readResponsesText(json);
@@ -69,16 +56,17 @@ export async function sendProviderRequest({ provider, snapshot, question, stream
     headers,
     body: JSON.stringify({
       model: provider.model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
+      messages: [{ role: "system", content: systemPrompt }, ...promptMessages],
       stream
     })
   });
 
+  if (stream) {
+    return readStreamingText(response, readChatCompletionsStreamDelta, readChatCompletionsText, onToken);
+  }
+
   const json = await readJsonResponse(response);
-  return json.choices?.[0]?.message?.content?.trim() || "No response text was returned.";
+  return readChatCompletionsText(json);
 }
 
 export async function testProvider(provider) {
@@ -139,6 +127,129 @@ async function readJsonResponse(response) {
   }
 
   return json;
+}
+
+function buildPromptMessages({ snapshot, question, conversation }) {
+  const userPrompt =
+    snapshot.source === "selection"
+      ? [
+          "The user selected this text from the page:",
+          "",
+          snapshot.text,
+          "",
+          "Question:",
+          question
+        ].join("\n")
+      : [
+          `Page title: ${snapshot.title}`,
+          `URL: ${snapshot.url}`,
+          `Context mode: full page`,
+          `Captured at: ${snapshot.capturedAt}`,
+          "",
+          "Page context:",
+          snapshot.text,
+          "",
+          "User question:",
+          question
+        ].join("\n");
+
+  const recentConversation = conversation
+    .filter((message) => message?.role === "user" || message?.role === "assistant")
+    .slice(-8)
+    .map((message) => ({
+      role: message.role,
+      content: String(message.content ?? "")
+    }))
+    .filter((message) => message.content.trim());
+
+  return [...recentConversation, { role: "user", content: userPrompt }];
+}
+
+async function readStreamingText(response, readDelta, readFallbackText, onToken) {
+  if (!response.ok) {
+    await readJsonResponse(response);
+  }
+
+  if (!response.body) {
+    throw new Error("Provider did not return a readable stream.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let rawText = "";
+  let text = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    const chunk = decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    buffer += chunk;
+    rawText += chunk;
+
+    const events = buffer.split(/\r?\n\r?\n/);
+    buffer = done ? "" : events.pop() ?? "";
+
+    for (const event of events) {
+      for (const line of event.split(/\r?\n/)) {
+        const trimmed = line.trim();
+
+        if (!trimmed.startsWith("data:")) {
+          continue;
+        }
+
+        const data = trimmed.slice(5).trim();
+
+        if (!data || data === "[DONE]") {
+          continue;
+        }
+
+        let json;
+
+        try {
+          json = JSON.parse(data);
+        } catch {
+          continue;
+        }
+
+        const delta = readDelta(json);
+
+        if (delta) {
+          text += delta;
+          onToken?.(delta, text);
+        }
+      }
+    }
+
+    if (done) {
+      break;
+    }
+  }
+
+  if (text.trim()) {
+    return text.trim();
+  }
+
+  try {
+    return readFallbackText(JSON.parse(rawText.trim()));
+  } catch {
+    return "No response text was returned.";
+  }
+}
+
+function readChatCompletionsStreamDelta(json) {
+  return json.choices?.[0]?.delta?.content ?? "";
+}
+
+function readResponsesStreamDelta(json) {
+  if (json.type === "response.output_text.delta") {
+    return json.delta ?? "";
+  }
+
+  return json.delta?.text ?? json.output_text ?? "";
+}
+
+function readChatCompletionsText(json) {
+  return json.choices?.[0]?.message?.content?.trim() || "No response text was returned.";
 }
 
 function readResponsesText(json) {
